@@ -4,7 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FileDropper — LAN file &amp; clipboard transfer</title>
-  <link rel="stylesheet" href="style.css" />
+  <!-- Bump the ?v= version whenever style.css / app.js change so browsers
+       don't run a stale cached copy against fresh HTML. -->
+  <link rel="stylesheet" href="style.css?v=3" />
 </head>
 <body>
   <header>
@@ -126,7 +128,7 @@
     <p>Runs in your browser via WebRTC. <a href="https://github.com/oofnish/filedropper" target="_blank" rel="noopener">Source</a></p>
   </footer>
 
-  <script src="vendor/peerjs.min.js"></script>
-  <script src="app.js"></script>
+  <script src="vendor/peerjs.min.js?v=1.5.4"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>
