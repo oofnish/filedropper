@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>📨 FileDropper</h1>
-    <p class="tagline">Peer-to-peer file &amp; clipboard transfer between two browsers. No server, no upload — your data goes directly device-to-device.</p>
+    <p class="tagline">Peer-to-peer file &amp; clipboard transfer between two browsers. Your data goes directly device-to-device.</p>
   </header>
 
   <main>
@@ -26,41 +26,72 @@
       </div>
     </section>
 
-    <!-- ============ CREATE (offerer) ============ -->
+    <!-- ============ CREATE ============ -->
     <section id="panel-create" class="panel hidden">
       <h2>Create a connection</h2>
-      <ol class="steps">
-        <li>
-          <p>Send this <strong>invite code</strong> to the other device (chat, email, AirDrop, or paste it into the "Join" box there):</p>
-          <textarea id="offer-out" class="code" readonly placeholder="Generating…"></textarea>
-          <button id="btn-copy-offer" class="copy">Copy invite code</button>
-        </li>
-        <li>
-          <p>Paste the <strong>reply code</strong> the other device gives you back, then connect:</p>
-          <textarea id="answer-in" class="code" placeholder="Paste reply code here…"></textarea>
-          <button id="btn-accept-answer">Connect</button>
-        </li>
-      </ol>
-      <button class="link back">↩ Back</button>
+
+      <!-- Easy mode: shareable word code via signaling broker -->
+      <div id="create-easy">
+        <p>On the <strong>other</strong> device, click <em>Join a connection</em> and type this code:</p>
+        <div id="my-code" class="bigcode">…</div>
+        <button id="btn-copy-code" class="copy">Copy code</button>
+        <p id="create-easy-status" class="hint">Setting up…</p>
+        <button class="link" id="to-create-manual">Code not working / offline? Use a manual code instead →</button>
+      </div>
+
+      <!-- Manual fallback: copy/paste descriptors, no broker needed -->
+      <div id="create-manual" class="hidden">
+        <ol class="steps">
+          <li>
+            <p>Send this <strong>invite code</strong> to the other device (paste it into its "Join → manual" box):</p>
+            <textarea id="offer-out" class="code" readonly placeholder="Generating…"></textarea>
+            <button id="btn-copy-offer" class="copy">Copy invite code</button>
+          </li>
+          <li>
+            <p>Paste the <strong>reply code</strong> the other device gives you back, then connect:</p>
+            <textarea id="answer-in" class="code" placeholder="Paste reply code here…"></textarea>
+            <button id="btn-accept-answer">Connect</button>
+          </li>
+        </ol>
+        <button class="link" id="to-create-easy">↩ Back to the easy code</button>
+      </div>
+
+      <button class="link back">↩ Cancel</button>
     </section>
 
-    <!-- ============ JOIN (answerer) ============ -->
+    <!-- ============ JOIN ============ -->
     <section id="panel-join" class="panel hidden">
       <h2>Join a connection</h2>
-      <ol class="steps">
-        <li>
-          <p>Paste the <strong>invite code</strong> from the other device:</p>
-          <textarea id="offer-in" class="code" placeholder="Paste invite code here…"></textarea>
-          <button id="btn-gen-answer">Generate reply code</button>
-        </li>
-        <li id="answer-step" class="hidden">
-          <p>Send this <strong>reply code</strong> back to the other device:</p>
-          <textarea id="answer-out" class="code" readonly></textarea>
-          <button id="btn-copy-answer" class="copy">Copy reply code</button>
-          <p class="hint">Once they paste it and click Connect, you're linked.</p>
-        </li>
-      </ol>
-      <button class="link back">↩ Back</button>
+
+      <!-- Easy mode -->
+      <div id="join-easy">
+        <p>Enter the code shown on the other device:</p>
+        <input id="join-code" class="codeinput" placeholder="badger-having-toothache"
+               autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" />
+        <button id="btn-join-connect">Connect</button>
+        <p id="join-easy-status" class="hint"></p>
+        <button class="link" id="to-join-manual">Code not working / offline? Use a manual code instead →</button>
+      </div>
+
+      <!-- Manual fallback -->
+      <div id="join-manual" class="hidden">
+        <ol class="steps">
+          <li>
+            <p>Paste the <strong>invite code</strong> from the other device:</p>
+            <textarea id="offer-in" class="code" placeholder="Paste invite code here…"></textarea>
+            <button id="btn-gen-answer">Generate reply code</button>
+          </li>
+          <li id="answer-step" class="hidden">
+            <p>Send this <strong>reply code</strong> back to the other device:</p>
+            <textarea id="answer-out" class="code" readonly></textarea>
+            <button id="btn-copy-answer" class="copy">Copy reply code</button>
+            <p class="hint">Once they paste it and click Connect, you're linked.</p>
+          </li>
+        </ol>
+        <button class="link" id="to-join-easy">↩ Back to the easy code</button>
+      </div>
+
+      <button class="link back">↩ Cancel</button>
     </section>
 
     <!-- ============ TRANSFER ============ -->
@@ -92,9 +123,10 @@
   </main>
 
   <footer>
-    <p>Runs entirely in your browser via WebRTC. <a href="https://github.com/oofnish/filedropper" target="_blank" rel="noopener">Source</a></p>
+    <p>Runs in your browser via WebRTC. <a href="https://github.com/oofnish/filedropper" target="_blank" rel="noopener">Source</a></p>
   </footer>
 
+  <script src="vendor/peerjs.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
