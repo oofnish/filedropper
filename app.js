@@ -1,32 +1,39 @@
 /*
  * FileDropper — peer-to-peer file & clipboard transfer over WebRTC.
  *
- * No backend: the two browsers exchange a one-time "code" (an SDP descriptor
- * plus gathered ICE candidates, gzipped + base64) by copy/paste. After that a
- * direct DataChannel carries everything. On a LAN the connection is made
- * machine-to-machine, so data never leaves the network.
+ * Two ways to connect:
+ *   Easy   — a short word code (e.g. "badger-having-toothache"). A public
+ *            PeerJS signaling broker maps the code to the WebRTC handshake.
+ *            Only the tiny handshake touches the broker; files flow directly
+ *            peer-to-peer (over the LAN when both devices are on it).
+ *   Manual — copy/paste the WebRTC descriptors directly. No broker, no third
+ *            party, works fully offline. The code is long because it carries
+ *            the entire handshake (keys, ICE candidates) itself.
+ *
+ * Both paths converge on one `channel` object (a real RTCDataChannel for the
+ * manual path, or a thin wrapper around a PeerJS DataConnection) and share the
+ * same message protocol below.
  */
 
 'use strict';
 
 // ---- Config ---------------------------------------------------------------
 
-// 16 KiB is a safe per-message size for RTCDataChannel across browsers.
-const CHUNK_SIZE = 16 * 1024;
-// Pause sending once this many bytes are buffered, resume when drained.
-const BUFFER_HIGH = 1 * 1024 * 1024;
-// Stop waiting for ICE candidates after this long (host candidates, which are
-// all we need on a LAN, arrive almost immediately).
-const ICE_TIMEOUT_MS = 3000;
-// A public STUN server helps when the two peers aren't on the same LAN.
-// On an isolated network it simply times out and host candidates are used.
+const CHUNK_SIZE = 16 * 1024;          // safe per-message size for a DataChannel
+const BUFFER_HIGH = 1 * 1024 * 1024;   // pause sending above this many buffered bytes
+const ICE_TIMEOUT_MS = 3000;           // stop waiting for ICE (host candidates arrive first)
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+
+// PeerJS ids are global on the shared public broker, so namespace ours to
+// avoid clashing with other apps' ids.
+const PEER_PREFIX = 'filedropper-v1-';
 
 // ---- State ----------------------------------------------------------------
 
-let pc = null;          // RTCPeerConnection
-let channel = null;     // RTCDataChannel
-let incoming = null;    // in-progress received file: { meta, chunks, received, li, bar }
+let pc = null;        // RTCPeerConnection (manual path)
+let peer = null;      // PeerJS Peer (easy path)
+let channel = null;   // active transport (RTCDataChannel or PeerJS wrapper)
+let incoming = null;  // in-progress received file: { meta, chunks, received, bar }
 
 // ---- DOM helpers ----------------------------------------------------------
 
@@ -43,7 +50,142 @@ function setStatus(text, kind) {
   el.className = 'status status--' + kind;
 }
 
-// ---- Signal encoding (gzip + base64, with a 1-char compression flag) ------
+// ============================================================================
+// EASY PATH — friendly word code via PeerJS broker
+// ============================================================================
+
+// A small, easy-to-type word list. Three words ~= 21 bits, plenty for a
+// transient, namespaced id; collisions are retried on 'unavailable-id'.
+const WORDS = [
+  'badger', 'maple', 'pickle', 'rocket', 'velvet', 'cobalt', 'mango', 'pebble',
+  'tiger', 'willow', 'cactus', 'lemon', 'falcon', 'gravy', 'hazel', 'igloo',
+  'jelly', 'kettle', 'lilac', 'meadow', 'noodle', 'olive', 'puffin', 'quartz',
+  'raisin', 'sunny', 'turnip', 'umbra', 'violet', 'walnut', 'xenon', 'yodel',
+  'zebra', 'amber', 'breezy', 'cocoa', 'dapper', 'ember', 'fizzy', 'glimmer',
+  'happy', 'ivory', 'jolly', 'kooky', 'lucky', 'mellow', 'nifty', 'orbit',
+  'plucky', 'quirky', 'rusty', 'snappy', 'tidy', 'upbeat', 'vivid', 'witty',
+  'having', 'finding', 'chasing', 'baking', 'jumping', 'singing', 'dancing',
+  'toothache', 'sandwich', 'umbrella', 'lantern', 'compass', 'biscuit',
+  'penguin', 'dragon', 'wizard', 'comet', 'puzzle', 'anchor', 'beacon', 'tunnel',
+];
+
+function randomCode() {
+  const pick = () => WORDS[Math.floor(Math.random() * WORDS.length)];
+  return pick() + '-' + pick() + '-' + pick();
+}
+
+function brokerAvailable() {
+  return typeof Peer !== 'undefined';
+}
+
+// Create side: register a code and wait for the other device to connect.
+function startEasyHost() {
+  if (!brokerAvailable()) {
+    $('create-easy-status').textContent =
+      'Signaling library could not load (offline?). Use the manual code below.';
+    switchCreate('manual');
+    return;
+  }
+  $('my-code').textContent = '…';
+  $('create-easy-status').textContent = 'Setting up…';
+
+  const code = randomCode();
+  peer = new Peer(PEER_PREFIX + code, { debug: 1 });
+
+  peer.on('open', () => {
+    $('my-code').textContent = code;
+    setStatus('Waiting for the other device…', 'connecting');
+    $('create-easy-status').textContent = 'Waiting for the other device to join…';
+  });
+
+  peer.on('connection', (conn) => {
+    // Accept the first peer only.
+    setStatus('Connecting…', 'connecting');
+    adoptPeerConnection(conn);
+  });
+
+  peer.on('error', (err) => {
+    if (err.type === 'unavailable-id') {
+      // Rare clash on the shared broker — try a fresh code.
+      peer.destroy();
+      startEasyHost();
+      return;
+    }
+    handleBrokerError(err, 'create-easy-status');
+  });
+}
+
+// Join side: connect to the code typed by the user.
+function startEasyJoin() {
+  const code = $('join-code').value.trim().toLowerCase().replace(/\s+/g, '-');
+  if (!code) { $('join-easy-status').textContent = 'Enter a code first.'; return; }
+  if (!brokerAvailable()) {
+    $('join-easy-status').textContent =
+      'Signaling library could not load (offline?). Use the manual code below.';
+    switchJoin('manual');
+    return;
+  }
+
+  $('join-easy-status').textContent = 'Connecting…';
+  setStatus('Connecting…', 'connecting');
+  peer = new Peer({ debug: 1 });
+
+  peer.on('open', () => {
+    const conn = peer.connect(PEER_PREFIX + code, { reliable: true, serialization: 'none' });
+    adoptPeerConnection(conn);
+  });
+
+  peer.on('error', (err) => {
+    if (err.type === 'peer-unavailable') {
+      $('join-easy-status').textContent = 'No device is waiting on that code. Double-check it.';
+      setStatus('Not connected', 'idle');
+      return;
+    }
+    handleBrokerError(err, 'join-easy-status');
+  });
+}
+
+function handleBrokerError(err, statusId) {
+  console.error('PeerJS error:', err);
+  $(statusId).textContent = 'Signaling problem (' + err.type + '). Try again, or use the manual code.';
+  setStatus('Connection error', 'error');
+}
+
+// Wrap a PeerJS DataConnection so the rest of the app can treat it like an
+// RTCDataChannel (same .send / .bufferedAmount / on{open,close,message}).
+function adoptPeerConnection(conn) {
+  channel = wrapPeerConn(conn);
+  setupChannel();
+  if (conn.open) channel.onopen();   // may already be open by the time we attach
+}
+
+function wrapPeerConn(conn) {
+  const w = {
+    binaryType: 'arraybuffer',
+    bufferedAmountLowThreshold: CHUNK_SIZE,
+    onopen: null, onclose: null, onmessage: null,
+    get readyState() { return conn.open ? 'open' : 'connecting'; },
+    get bufferedAmount() {
+      return conn.dataChannel ? conn.dataChannel.bufferedAmount : 0;
+    },
+    send(data) { conn.send(data); },
+    close() { conn.close(); },
+    addEventListener(ev, cb, opts) {
+      if (conn.dataChannel) conn.dataChannel.addEventListener(ev, cb, opts);
+    },
+  };
+  conn.on('open', () => {
+    if (conn.dataChannel) conn.dataChannel.bufferedAmountLowThreshold = CHUNK_SIZE;
+    if (w.onopen) w.onopen();
+  });
+  conn.on('close', () => w.onclose && w.onclose());
+  conn.on('data', (d) => w.onmessage && w.onmessage({ data: d }));
+  return w;
+}
+
+// ============================================================================
+// MANUAL PATH — copy/paste descriptors (gzip + base64, 1-char compression flag)
+// ============================================================================
 
 function bytesToB64(bytes) {
   let bin = '';
@@ -82,11 +224,8 @@ async function decodeSignal(str) {
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 
-// ---- WebRTC setup ---------------------------------------------------------
-
-function createPeer() {
+function createPeerConnection() {
   pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-
   pc.onconnectionstatechange = () => {
     const s = pc.connectionState;
     if (s === 'connecting' || s === 'new') setStatus('Connecting…', 'connecting');
@@ -94,16 +233,11 @@ function createPeer() {
     else if (s === 'failed') setStatus('Connection failed', 'error');
     else if (s === 'disconnected' || s === 'closed') setStatus('Disconnected', 'closed');
   };
-
-  // The joining peer receives the channel created by the other side.
-  pc.ondatachannel = (e) => {
-    channel = e.channel;
-    setupChannel();
-  };
+  pc.ondatachannel = (e) => { channel = e.channel; setupChannel(); };
 }
 
-// Resolves once ICE gathering is complete, or after a timeout (host
-// candidates are enough on a LAN and arrive first).
+// Resolve once ICE gathering completes, or after a timeout (host candidates,
+// which are all we need on a LAN, arrive first).
 function waitForIce() {
   return new Promise((resolve) => {
     if (pc.iceGatheringState === 'complete') return resolve();
@@ -118,23 +252,10 @@ function waitForIce() {
   });
 }
 
-function setupChannel() {
-  channel.binaryType = 'arraybuffer';
-  channel.bufferedAmountLowThreshold = CHUNK_SIZE;
-  channel.onopen = () => { setStatus('Connected', 'connected'); show('panel-transfer'); };
-  channel.onclose = () => setStatus('Disconnected', 'closed');
-  channel.onmessage = onMessage;
-}
-
-// ---- Role: create (offerer) ----------------------------------------------
-
-async function startOffer() {
-  show('panel-create');
-  setStatus('Generating invite…', 'connecting');
-  createPeer();
+async function buildOffer() {
+  createPeerConnection();
   channel = pc.createDataChannel('filedropper', { ordered: true });
   setupChannel();
-
   await pc.setLocalDescription(await pc.createOffer());
   await waitForIce();
   $('offer-out').value = await encodeSignal(pc.localDescription);
@@ -152,13 +273,11 @@ async function acceptAnswer() {
   }
 }
 
-// ---- Role: join (answerer) ------------------------------------------------
-
 async function generateAnswer() {
   const code = $('offer-in').value;
   if (!code.trim()) return alert('Paste the invite code first.');
   setStatus('Generating reply…', 'connecting');
-  createPeer();
+  createPeerConnection();
   try {
     await pc.setRemoteDescription(await decodeSignal(code));
   } catch (err) {
@@ -172,7 +291,17 @@ async function generateAnswer() {
   setStatus('Send the reply code back…', 'connecting');
 }
 
-// ---- Messaging ------------------------------------------------------------
+// ============================================================================
+// SHARED — channel setup, messaging, transfers
+// ============================================================================
+
+function setupChannel() {
+  channel.binaryType = 'arraybuffer';
+  channel.bufferedAmountLowThreshold = CHUNK_SIZE;
+  channel.onopen = () => { setStatus('Connected', 'connected'); show('panel-transfer'); };
+  channel.onclose = () => setStatus('Disconnected', 'closed');
+  channel.onmessage = onMessage;
+}
 
 function onMessage(e) {
   if (typeof e.data === 'string') {
@@ -181,8 +310,9 @@ function onMessage(e) {
     else if (msg.type === 'file-meta') startReceiveFile(msg);
     else if (msg.type === 'file-end') finishReceiveFile();
   } else if (incoming) {
-    incoming.chunks.push(e.data);
-    incoming.received += e.data.byteLength;
+    const buf = e.data.byteLength !== undefined ? e.data : new Uint8Array(e.data);
+    incoming.chunks.push(buf);
+    incoming.received += buf.byteLength;
     if (incoming.bar) incoming.bar.value = incoming.received;
   }
 }
@@ -215,7 +345,7 @@ async function sendFile(file) {
     if (done) break;
     for (let off = 0; off < value.byteLength; off += CHUNK_SIZE) {
       await waitForDrain();
-      channel.send(value.subarray(off, off + CHUNK_SIZE));
+      channel.send(value.slice(off, off + CHUNK_SIZE));
       sent += Math.min(CHUNK_SIZE, value.byteLength - off);
       note.bar.value = sent;
     }
@@ -235,6 +365,12 @@ function fmtSize(n) {
   if (n < 1024) return n + ' B';
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
   return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
 }
 
 function startReceiveFile(meta) {
@@ -313,20 +449,40 @@ function addOutgoingNote(text) {
   $('outgoing').prepend(li);
 }
 
-function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, (c) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-  ));
-}
+// ---- Mode toggles & reset -------------------------------------------------
 
-// ---- Reset ----------------------------------------------------------------
-
-function reset() {
+function teardownConnections() {
   if (channel) try { channel.close(); } catch (_) {}
   if (pc) try { pc.close(); } catch (_) {}
-  channel = null; pc = null; incoming = null;
-  ['offer-out', 'answer-in', 'offer-in', 'answer-out', 'text-input'].forEach((id) => ($(id).value = ''));
+  if (peer) try { peer.destroy(); } catch (_) {}
+  channel = null; pc = null; peer = null; incoming = null;
+}
+
+function switchCreate(mode) {
+  teardownConnections();
+  $('create-easy').classList.toggle('hidden', mode !== 'easy');
+  $('create-manual').classList.toggle('hidden', mode !== 'manual');
+  if (mode === 'easy') startEasyHost();
+  else { $('offer-out').value = ''; $('answer-in').value = ''; buildOffer(); }
+}
+
+function switchJoin(mode) {
+  teardownConnections();
+  $('join-easy').classList.toggle('hidden', mode !== 'easy');
+  $('join-manual').classList.toggle('hidden', mode !== 'manual');
   $('answer-step').classList.add('hidden');
+  if (mode === 'manual') { $('offer-in').value = ''; $('answer-out').value = ''; }
+  if (mode === 'easy') { $('join-easy-status').textContent = ''; }
+}
+
+function reset() {
+  teardownConnections();
+  ['offer-out', 'answer-in', 'offer-in', 'answer-out', 'text-input', 'join-code'].forEach((id) => ($(id).value = ''));
+  $('answer-step').classList.add('hidden');
+  $('create-easy').classList.remove('hidden');
+  $('create-manual').classList.add('hidden');
+  $('join-easy').classList.remove('hidden');
+  $('join-manual').classList.add('hidden');
   setStatus('Not connected', 'idle');
   show('panel-role');
 }
@@ -334,7 +490,7 @@ function reset() {
 // ---- Wiring ---------------------------------------------------------------
 
 function copyFrom(id, btn) {
-  navigator.clipboard.writeText($(id).value).then(() => {
+  navigator.clipboard.writeText($(id).textContent || $(id).value).then(() => {
     const old = btn.textContent;
     btn.textContent = 'Copied!';
     setTimeout(() => (btn.textContent = old), 1500);
@@ -342,21 +498,34 @@ function copyFrom(id, btn) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  $('btn-create').onclick = startOffer;
-  $('btn-join').onclick = () => show('panel-join');
+  // Role selection
+  $('btn-create').onclick = () => { show('panel-create'); switchCreate('easy'); };
+  $('btn-join').onclick = () => { show('panel-join'); switchJoin('easy'); };
+
+  // Easy path
+  $('btn-copy-code').onclick = (e) => copyFrom('my-code', e.target);
+  $('btn-join-connect').onclick = startEasyJoin;
+  $('join-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') startEasyJoin(); });
+
+  // Manual path
   $('btn-accept-answer').onclick = acceptAnswer;
   $('btn-gen-answer').onclick = generateAnswer;
   $('btn-copy-offer').onclick = (e) => copyFrom('offer-out', e.target);
   $('btn-copy-answer').onclick = (e) => copyFrom('answer-out', e.target);
+
+  // Mode toggles
+  $('to-create-manual').onclick = () => switchCreate('manual');
+  $('to-create-easy').onclick = () => switchCreate('easy');
+  $('to-join-manual').onclick = () => switchJoin('manual');
+  $('to-join-easy').onclick = () => switchJoin('easy');
+
+  // Cancel / disconnect
   $('btn-disconnect').onclick = reset;
   document.querySelectorAll('.back').forEach((b) => (b.onclick = reset));
 
   // File picker + drag & drop
   const dz = $('dropzone');
-  $('file-input').onchange = (e) => {
-    [...e.target.files].forEach(sendFile);
-    e.target.value = '';
-  };
+  $('file-input').onchange = (e) => { [...e.target.files].forEach(sendFile); e.target.value = ''; };
   ['dragenter', 'dragover'].forEach((ev) => dz.addEventListener(ev, (e) => {
     e.preventDefault(); dz.classList.add('dragover');
   }));
