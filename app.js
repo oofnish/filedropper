@@ -155,7 +155,9 @@ function startEasyJoin() {
 
   peer.on('open', () => {
     clearBrokerWatchdog();
-    const conn = peer.connect(PEER_PREFIX + code, { reliable: true, serialization: 'none' });
+    // 'raw' passes strings and binary through untouched; we do our own
+    // chunking. (Note: PeerJS has no 'none' serializer despite the enum.)
+    const conn = peer.connect(PEER_PREFIX + code, { reliable: true, serialization: 'raw' });
     adoptPeerConnection(conn);
   });
 
