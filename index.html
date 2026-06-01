@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FileDropper — LAN file &amp; clipboard transfer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>📨 FileDropper</h1>
+    <p class="tagline">Peer-to-peer file &amp; clipboard transfer between two browsers. No server, no upload — your data goes directly device-to-device.</p>
+  </header>
+
+  <main>
+    <!-- Connection status badge -->
+    <div id="status" class="status status--idle">Not connected</div>
+
+    <!-- ============ SETUP: choose a role ============ -->
+    <section id="panel-role" class="panel">
+      <h2>1. Pick a role on each device</h2>
+      <p class="hint">One device <strong>creates</strong> the connection, the other <strong>joins</strong> it. It doesn't matter which is which.</p>
+      <div class="role-buttons">
+        <button id="btn-create" class="big">Create a connection</button>
+        <button id="btn-join" class="big secondary">Join a connection</button>
+      </div>
+    </section>
+
+    <!-- ============ CREATE (offerer) ============ -->
+    <section id="panel-create" class="panel hidden">
+      <h2>Create a connection</h2>
+      <ol class="steps">
+        <li>
+          <p>Send this <strong>invite code</strong> to the other device (chat, email, AirDrop, or paste it into the "Join" box there):</p>
+          <textarea id="offer-out" class="code" readonly placeholder="Generating…"></textarea>
+          <button id="btn-copy-offer" class="copy">Copy invite code</button>
+        </li>
+        <li>
+          <p>Paste the <strong>reply code</strong> the other device gives you back, then connect:</p>
+          <textarea id="answer-in" class="code" placeholder="Paste reply code here…"></textarea>
+          <button id="btn-accept-answer">Connect</button>
+        </li>
+      </ol>
+      <button class="link back">↩ Back</button>
+    </section>
+
+    <!-- ============ JOIN (answerer) ============ -->
+    <section id="panel-join" class="panel hidden">
+      <h2>Join a connection</h2>
+      <ol class="steps">
+        <li>
+          <p>Paste the <strong>invite code</strong> from the other device:</p>
+          <textarea id="offer-in" class="code" placeholder="Paste invite code here…"></textarea>
+          <button id="btn-gen-answer">Generate reply code</button>
+        </li>
+        <li id="answer-step" class="hidden">
+          <p>Send this <strong>reply code</strong> back to the other device:</p>
+          <textarea id="answer-out" class="code" readonly></textarea>
+          <button id="btn-copy-answer" class="copy">Copy reply code</button>
+          <p class="hint">Once they paste it and click Connect, you're linked.</p>
+        </li>
+      </ol>
+      <button class="link back">↩ Back</button>
+    </section>
+
+    <!-- ============ TRANSFER ============ -->
+    <section id="panel-transfer" class="panel hidden">
+      <h2>Connected — drop, send &amp; paste</h2>
+
+      <div id="dropzone" class="dropzone">
+        <p>Drag &amp; drop files here, or</p>
+        <label class="filepick">
+          Choose files
+          <input id="file-input" type="file" multiple hidden />
+        </label>
+        <p class="hint">Tip: you can also paste (⌘/Ctrl-V) anywhere on this page to send clipboard text or images.</p>
+      </div>
+
+      <div class="text-send">
+        <textarea id="text-input" placeholder="Type or paste text to send…"></textarea>
+        <button id="btn-send-text">Send text</button>
+      </div>
+
+      <h3>Received</h3>
+      <ul id="received" class="received"><li class="empty">Nothing yet.</li></ul>
+
+      <h3>Sending</h3>
+      <ul id="outgoing" class="received"><li class="empty">Nothing yet.</li></ul>
+
+      <button class="link" id="btn-disconnect">Disconnect</button>
+    </section>
+  </main>
+
+  <footer>
+    <p>Runs entirely in your browser via WebRTC. <a href="https://github.com/oofnish/filedropper" target="_blank" rel="noopener">Source</a></p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
