@@ -78,6 +78,25 @@ function brokerAvailable() {
   return typeof Peer !== 'undefined';
 }
 
+// If the broker never confirms our registration, surface an error instead of
+// hanging silently on the placeholder.
+const BROKER_TIMEOUT_MS = 15000;
+let brokerTimer = null;
+
+function armBrokerWatchdog(statusId) {
+  clearTimeout(brokerTimer);
+  brokerTimer = setTimeout(() => {
+    $(statusId).textContent =
+      'Could not reach the signaling broker. Check your internet, or use the manual code.';
+    setStatus('Connection error', 'error');
+  }, BROKER_TIMEOUT_MS);
+}
+
+function clearBrokerWatchdog() {
+  clearTimeout(brokerTimer);
+  brokerTimer = null;
+}
+
 // Create side: register a code and wait for the other device to connect.
 function startEasyHost() {
   if (!brokerAvailable()) {
@@ -91,8 +110,10 @@ function startEasyHost() {
 
   const code = randomCode();
   peer = new Peer(PEER_PREFIX + code, { debug: 1 });
+  armBrokerWatchdog('create-easy-status');
 
   peer.on('open', () => {
+    clearBrokerWatchdog();
     $('my-code').textContent = code;
     setStatus('Waiting for the other device…', 'connecting');
     $('create-easy-status').textContent = 'Waiting for the other device to join…';
@@ -105,6 +126,7 @@ function startEasyHost() {
   });
 
   peer.on('error', (err) => {
+    clearBrokerWatchdog();
     if (err.type === 'unavailable-id') {
       // Rare clash on the shared broker — try a fresh code.
       peer.destroy();
@@ -129,13 +151,16 @@ function startEasyJoin() {
   $('join-easy-status').textContent = 'Connecting…';
   setStatus('Connecting…', 'connecting');
   peer = new Peer({ debug: 1 });
+  armBrokerWatchdog('join-easy-status');
 
   peer.on('open', () => {
+    clearBrokerWatchdog();
     const conn = peer.connect(PEER_PREFIX + code, { reliable: true, serialization: 'none' });
     adoptPeerConnection(conn);
   });
 
   peer.on('error', (err) => {
+    clearBrokerWatchdog();
     if (err.type === 'peer-unavailable') {
       $('join-easy-status').textContent = 'No device is waiting on that code. Double-check it.';
       setStatus('Not connected', 'idle');
@@ -452,6 +477,7 @@ function addOutgoingNote(text) {
 // ---- Mode toggles & reset -------------------------------------------------
 
 function teardownConnections() {
+  clearBrokerWatchdog();
   if (channel) try { channel.close(); } catch (_) {}
   if (pc) try { pc.close(); } catch (_) {}
   if (peer) try { peer.destroy(); } catch (_) {}
